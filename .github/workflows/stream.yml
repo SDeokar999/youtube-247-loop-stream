@@ -1,0 +1,51 @@
+name: 24/7 YouTube Loop Stream
+
+# GitHub-hosted runners cap every JOB at 6 hours (hard limit, cannot be raised).
+# So instead of one long-running job, this workflow re-launches itself every
+# 6 hours via cron. Each run streams for ~5h55m then exits; the next scheduled
+# run picks up where it left off. Expect a small gap (usually 1-10 minutes,
+# occasionally more under GitHub's load) at each restart boundary — see
+# README.md "Known limitations" for why, and for the gap-free alternative.
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # 00:00, 06:00, 12:00, 18:00 UTC
+  workflow_dispatch: {}      # manual "Run workflow" button, for testing
+
+concurrency:
+  group: youtube-loop-stream
+  cancel-in-progress: true   # never let two streaming jobs fight over the same RTMP key
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355     # 5h55m — stop just before the 6h hard cap
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Ensure ffmpeg is installed
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version | head -n1
+
+      - name: Stream loop to YouTube
+        env:
+          YT_STREAM_KEY: ${{ secrets.YT_STREAM_KEY }}
+          VIDEO_PATH: video/loop.mp4
+          JOB_BUDGET_SECONDS: '21000'   # ~350 min; leaves 5 min buffer before timeout-minutes kills the job
+        run: |
+          if [ -z "$YT_STREAM_KEY" ]; then
+            echo "::error::YT_STREAM_KEY secret is not set. Add it in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          if [ ! -f "$VIDEO_PATH" ]; then
+            echo "::error::$VIDEO_PATH not found. Commit your video there first (see README.md)."
+            exit 1
+          fi
+          chmod +x scripts/stream-loop.sh
+          scripts/stream-loop.sh
